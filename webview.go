@@ -32,10 +32,10 @@ import (
 	"sync"
 	"unsafe"
 
-	_ "github.com/webview/webview_go/libs/mswebview2"
-	_ "github.com/webview/webview_go/libs/mswebview2/include"
-	_ "github.com/webview/webview_go/libs/webview"
-	_ "github.com/webview/webview_go/libs/webview/include"
+	_ "github.com/GopeedLab/webview_go/libs/mswebview2"
+	_ "github.com/GopeedLab/webview_go/libs/mswebview2/include"
+	_ "github.com/GopeedLab/webview_go/libs/webview"
+	_ "github.com/GopeedLab/webview_go/libs/webview/include"
 )
 
 func init() {
