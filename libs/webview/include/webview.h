@@ -294,6 +294,14 @@ WEBVIEW_API void webview_navigate(webview_t w, const char *url);
 WEBVIEW_API void webview_set_html(webview_t w, const char *html);
 
 /**
+ * Updates the native browser user agent.
+ *
+ * @param w The webview instance.
+ * @param user_agent The new user agent.
+ */
+WEBVIEW_API void webview_set_user_agent(webview_t w, const char *user_agent);
+
+/**
  * Injects JavaScript code to be executed immediately upon loading a page.
  * The code will be executed before @c window.onload.
  *
@@ -1007,6 +1015,9 @@ if (status === 0) {\
   }
 
   void set_html(const std::string &html) { set_html_impl(html); }
+  void set_user_agent(const std::string &user_agent) {
+    set_user_agent_impl(user_agent);
+  }
   void init(const std::string &js) { init_impl(js); }
   void eval(const std::string &js) { eval_impl(js); }
 
@@ -1021,6 +1032,7 @@ protected:
   virtual void set_title_impl(const std::string &title) = 0;
   virtual void set_size_impl(int width, int height, webview_hint_t hints) = 0;
   virtual void set_html_impl(const std::string &html) = 0;
+  virtual void set_user_agent_impl(const std::string &user_agent) = 0;
   virtual void init_impl(const std::string &js) = 0;
   virtual void eval_impl(const std::string &js) = 0;
 
@@ -1361,6 +1373,12 @@ public:
                               nullptr);
   }
 
+  void set_user_agent_impl(const std::string &user_agent) override {
+    WebKitSettings *settings =
+        webkit_web_view_get_settings(WEBKIT_WEB_VIEW(m_webview));
+    webkit_settings_set_user_agent(settings, user_agent.c_str());
+  }
+
   void init_impl(const std::string &js) override {
     WebKitUserContentManager *manager =
         webkit_web_view_get_user_content_manager(WEBKIT_WEB_VIEW(m_webview));
@@ -1698,6 +1716,13 @@ public:
                                             "stringWithUTF8String:"_sel,
                                             html.c_str()),
                          nullptr);
+  }
+  void set_user_agent_impl(const std::string &user_agent) override {
+    objc::autoreleasepool arp;
+    objc::msg_send<void>(
+        m_webview, "setCustomUserAgent:"_sel,
+        objc::msg_send<id>("NSString"_cls, "stringWithUTF8String:"_sel,
+                           user_agent.c_str()));
   }
   void init_impl(const std::string &js) override {
     objc::autoreleasepool arp;
@@ -3310,6 +3335,27 @@ public:
     m_webview->NavigateToString(widen_string(html).c_str());
   }
 
+  void set_user_agent_impl(const std::string &user_agent) override {
+    if (!m_webview) {
+      return;
+    }
+    ICoreWebView2Settings *settings = nullptr;
+    auto res = m_webview->get_Settings(&settings);
+    if (res != S_OK || !settings) {
+      return;
+    }
+    ICoreWebView2Settings2 *settings2 = nullptr;
+    res = settings->QueryInterface(IID_ICoreWebView2Settings2,
+                                   reinterpret_cast<void **>(&settings2));
+    settings->Release();
+    if (res != S_OK || !settings2) {
+      return;
+    }
+    auto wua = widen_string(user_agent);
+    settings2->put_UserAgent(wua.c_str());
+    settings2->Release();
+  }
+
 private:
   bool embed(HWND wnd, bool debug, msg_cb_t cb) {
     std::atomic_flag flag = ATOMIC_FLAG_INIT;
@@ -3558,6 +3604,10 @@ WEBVIEW_API void webview_navigate(webview_t w, const char *url) {
 
 WEBVIEW_API void webview_set_html(webview_t w, const char *html) {
   static_cast<webview::webview *>(w)->set_html(html);
+}
+
+WEBVIEW_API void webview_set_user_agent(webview_t w, const char *user_agent) {
+  static_cast<webview::webview *>(w)->set_user_agent(user_agent ? user_agent : "");
 }
 
 WEBVIEW_API void webview_init(webview_t w, const char *js) {

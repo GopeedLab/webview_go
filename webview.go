@@ -25,16 +25,17 @@ void CgoWebViewUnbind(webview_t w, const char *name);
 */
 import "C"
 import (
-	_ "github.com/webview/webview_go/libs/mswebview2"
-	_ "github.com/webview/webview_go/libs/mswebview2/include"
-	_ "github.com/webview/webview_go/libs/webview"
-	_ "github.com/webview/webview_go/libs/webview/include"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"runtime"
 	"sync"
 	"unsafe"
+
+	_ "github.com/webview/webview_go/libs/mswebview2"
+	_ "github.com/webview/webview_go/libs/mswebview2/include"
+	_ "github.com/webview/webview_go/libs/webview"
+	_ "github.com/webview/webview_go/libs/webview/include"
 )
 
 func init() {
@@ -100,6 +101,10 @@ type WebView interface {
 	// Example: w.SetHtml(w, "<h1>Hello</h1>");
 	SetHtml(html string)
 
+	// SetUserAgent updates the native user agent used by the embedded browser engine.
+	// Must be called on the UI thread and typically before navigation.
+	SetUserAgent(userAgent string)
+
 	// Init injects JavaScript code at the initialization of the new page. Every
 	// time the webview will open a the new page - this initialization code will
 	// be executed. It is guaranteed that code is executed before window.onload.
@@ -122,6 +127,22 @@ type WebView interface {
 
 	// Removes a callback that was previously set by Bind.
 	Unbind(name string) error
+
+	// GetCookies returns cookies that match the provided URL.
+	// Cookie APIs currently require platform support and should be called on the UI thread.
+	GetCookies(url string) ([]Cookie, error)
+
+	// SetCookie adds or updates a cookie.
+	// Cookie APIs currently require platform support and should be called on the UI thread.
+	SetCookie(cookie Cookie) error
+
+	// DeleteCookie removes cookies that match the given name, domain and path.
+	// Cookie APIs currently require platform support and should be called on the UI thread.
+	DeleteCookie(name string, domain string, path string) error
+
+	// ClearCookies removes all cookies in the current cookie store.
+	// Cookie APIs currently require platform support and should be called on the UI thread.
+	ClearCookies() error
 }
 
 type webview struct {
@@ -184,6 +205,12 @@ func (w *webview) SetHtml(html string) {
 	s := C.CString(html)
 	defer C.free(unsafe.Pointer(s))
 	C.webview_set_html(w.w, s)
+}
+
+func (w *webview) SetUserAgent(userAgent string) {
+	s := C.CString(userAgent)
+	defer C.free(unsafe.Pointer(s))
+	C.webview_set_user_agent(w.w, s)
 }
 
 func (w *webview) SetTitle(title string) {
