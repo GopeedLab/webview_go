@@ -10,6 +10,10 @@
 #include <cstring>
 #include <string>
 
+#ifndef WC_ERR_INVALID_CHARS
+#define WC_ERR_INVALID_CHARS 0x00000080
+#endif
+
 namespace {
 
 static char *copy_string(const std::string &value) {
@@ -144,8 +148,16 @@ static HRESULT get_cookie_manager(webview_t w,
     return E_POINTER;
   }
 
-  ICoreWebView2 *webview = nullptr;
-  HRESULT hr = controller->get_CoreWebView2(&webview);
+  ICoreWebView2 *webview_base = nullptr;
+  HRESULT hr = controller->get_CoreWebView2(&webview_base);
+  if (FAILED(hr)) {
+    return hr;
+  }
+
+  ICoreWebView2_2 *webview = nullptr;
+  hr = webview_base->QueryInterface(IID_ICoreWebView2_2,
+                                    reinterpret_cast<void **>(&webview));
+  webview_base->Release();
   if (FAILED(hr)) {
     return hr;
   }
@@ -158,7 +170,7 @@ class get_cookies_handler : public ICoreWebView2GetCookiesCompletedHandler {
 public:
   get_cookies_handler() : m_event(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
 
-  ~get_cookies_handler() override {
+  ~get_cookies_handler() {
     if (m_cookie_list != nullptr) {
       m_cookie_list->Release();
       m_cookie_list = nullptr;
