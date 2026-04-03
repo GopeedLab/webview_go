@@ -21,6 +21,9 @@ type IncrementResult struct {
 }
 
 func main() {
+	if !webview.IsAvailable() {
+		panic("webview is not available on this system")
+	}
 	var count uint = 0
 	w := webview.New(false)
 	defer w.Destroy()
