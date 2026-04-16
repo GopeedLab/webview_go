@@ -22,6 +22,10 @@ package webview
 void CgoWebViewDispatch(webview_t w, uintptr_t arg);
 void CgoWebViewBind(webview_t w, const char *name, uintptr_t index);
 void CgoWebViewUnbind(webview_t w, const char *name);
+void CgoWebViewSetVisible(webview_t w, int visible);
+void CgoWebViewEnableWindowClose(webview_t w);
+void *CgoWebViewCreateHiddenWindow();
+void CgoWebViewDestroyHiddenWindow(void *hwnd);
 */
 import "C"
 import (
@@ -143,10 +147,14 @@ type WebView interface {
 	// ClearCookies removes all cookies in the current cookie store.
 	// Cookie APIs currently require platform support and should be called on the UI thread.
 	ClearCookies() error
+	// SetVisible shows or hides the native window.
+	// Pass false for headless mode (window is hidden but webview still runs).
+	SetVisible(visible bool)
 }
 
 type webview struct {
-	w C.webview_t
+	w          C.webview_t
+	headlessWnd unsafe.Pointer
 }
 
 var (
@@ -167,6 +175,17 @@ func boolToInt(b bool) C.int {
 // is non-zero - developer tools will be enabled (if the platform supports them).
 func New(debug bool) WebView { return NewWindow(debug, nil) }
 
+// NewHeadless creates a new webview instance that runs without a visible window.
+// The webview is fully functional (JavaScript, navigation, bindings) but the
+// native window is never shown.  Call Destroy to clean up when done.
+func NewHeadless(debug bool) WebView {
+	hwnd := C.CgoWebViewCreateHiddenWindow()
+	w := &webview{headlessWnd: unsafe.Pointer(hwnd)}
+	w.w = C.webview_create(boolToInt(debug), unsafe.Pointer(hwnd))
+	C.CgoWebViewEnableWindowClose(w.w)
+	return w
+}
+
 // NewWindow creates a new webview instance. If debug is non-zero - developer
 // tools will be enabled (if the platform supports them). Window parameter can be
 // a pointer to the native window handle. If it's non-null - then child WebView is
@@ -176,11 +195,16 @@ func New(debug bool) WebView { return NewWindow(debug, nil) }
 func NewWindow(debug bool, window unsafe.Pointer) WebView {
 	w := &webview{}
 	w.w = C.webview_create(boolToInt(debug), window)
+	C.CgoWebViewEnableWindowClose(w.w)
 	return w
 }
 
 func (w *webview) Destroy() {
 	C.webview_destroy(w.w)
+	if w.headlessWnd != nil {
+		C.CgoWebViewDestroyHiddenWindow(w.headlessWnd)
+		w.headlessWnd = nil
+	}
 }
 
 func (w *webview) Run() {
@@ -221,6 +245,10 @@ func (w *webview) SetTitle(title string) {
 
 func (w *webview) SetSize(width int, height int, hint Hint) {
 	C.webview_set_size(w.w, C.int(width), C.int(height), C.webview_hint_t(hint))
+}
+
+func (w *webview) SetVisible(visible bool) {
+	C.CgoWebViewSetVisible(w.w, boolToInt(visible))
 }
 
 func (w *webview) Init(js string) {
