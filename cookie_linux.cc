@@ -287,6 +287,27 @@ extern "C" char *CgoWebViewSetCookie(webview_t w, const char *name,
   return nullptr;
 }
 
+static gboolean cookie_matches(SoupCookie *cookie, const char *name,
+                               const char *domain, const char *path) {
+  const char *cname = soup_cookie_get_name(cookie);
+  if (g_strcmp0(cname, name) != 0) {
+    return FALSE;
+  }
+  if (domain != nullptr && domain[0] != '\0') {
+    const char *cdomain = soup_cookie_get_domain(cookie);
+    if (g_strcmp0(cdomain, domain) != 0) {
+      return FALSE;
+    }
+  }
+  if (path != nullptr && path[0] != '\0') {
+    const char *cpath = soup_cookie_get_path(cookie);
+    if (g_strcmp0(cpath, path) != 0) {
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
 extern "C" char *CgoWebViewDeleteCookie(webview_t w, const char *name,
                                         const char *domain, const char *path) {
   auto *manager = cookie_manager_for_webview(w);
@@ -294,26 +315,55 @@ extern "C" char *CgoWebViewDeleteCookie(webview_t w, const char *name,
     return copy_error("failed to resolve WebKitCookieManager");
   }
 
-  SoupCookie *cookie = soup_cookie_new(name, "", domain, path, -1);
-  if (cookie == nullptr) {
-    return copy_error("failed to construct cookie");
+  // Build a URI from domain/path to look up real cookies.
+  std::string uri = "http://";
+  uri += (domain != nullptr) ? domain : "";
+  if (path != nullptr && path[0] != '\0') {
+    uri += path;
+  } else {
+    uri += "/";
   }
 
-  async_result result;
-  webkit_cookie_manager_delete_cookie(manager, cookie, nullptr,
-                                      on_delete_cookie_finished, &result);
-  if (!wait_until_done(&result, 5 * G_USEC_PER_SEC)) {
-    soup_cookie_free(cookie);
-    return copy_error("timed out while deleting cookie");
+  async_result get_result;
+  webkit_cookie_manager_get_cookies(manager, uri.c_str(), nullptr,
+                                    on_get_cookies_finished, &get_result);
+  if (!wait_until_done(&get_result, 5 * G_USEC_PER_SEC)) {
+    return copy_error("timed out while fetching cookies for deletion");
   }
-  soup_cookie_free(cookie);
-  if (result.error != nullptr) {
-    return copy_gerror(result.error);
+  if (get_result.error != nullptr) {
+    return copy_gerror(get_result.error);
   }
-  if (!result.ok) {
-    return copy_error("failed to delete cookie");
+
+  char *last_error = nullptr;
+  for (GList *node = get_result.cookies; node != nullptr; node = node->next) {
+    auto *cookie = static_cast<SoupCookie *>(node->data);
+    if (!cookie_matches(cookie, name, domain, path)) {
+      continue;
+    }
+
+    async_result del_result;
+    webkit_cookie_manager_delete_cookie(manager, cookie, nullptr,
+                                        on_delete_cookie_finished, &del_result);
+    if (!wait_until_done(&del_result, 5 * G_USEC_PER_SEC)) {
+      if (last_error != nullptr) {
+        free(last_error);
+      }
+      last_error = copy_error("timed out while deleting cookie");
+      continue;
+    }
+    if (del_result.error != nullptr) {
+      if (last_error != nullptr) {
+        free(last_error);
+      }
+      last_error = copy_gerror(del_result.error);
+    }
   }
-  return nullptr;
+
+  if (get_result.cookies != nullptr) {
+    g_list_free_full(get_result.cookies,
+                     reinterpret_cast<GDestroyNotify>(soup_cookie_free));
+  }
+  return last_error;
 }
 
 extern "C" char *CgoWebViewClearCookies(webview_t w) {

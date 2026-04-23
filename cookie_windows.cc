@@ -166,14 +166,22 @@ static HRESULT get_cookie_manager(webview_t w,
   return hr;
 }
 
-class get_cookies_handler : public ICoreWebView2GetCookiesCompletedHandler {
-public:
-  get_cookies_handler() : m_event(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
+static std::string json_for_cookie(ICoreWebView2Cookie *cookie);
 
-  ~get_cookies_handler() {
-    if (m_cookie_list != nullptr) {
-      m_cookie_list->Release();
-      m_cookie_list = nullptr;
+class get_cookies_request {
+public:
+  explicit get_cookies_request(const char *url)
+      : m_event(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
+        m_url(widen_string(url)) {}
+
+  ~get_cookies_request() {
+    if (m_json != nullptr) {
+      free(m_json);
+      m_json = nullptr;
+    }
+    if (m_error != nullptr) {
+      free(m_error);
+      m_error = nullptr;
     }
     if (m_event != nullptr) {
       CloseHandle(m_event);
@@ -181,15 +189,104 @@ public:
     }
   }
 
+  void AddRef() { InterlockedIncrement(&m_ref_count); }
+
+  void Release() {
+    if (InterlockedDecrement(&m_ref_count) == 0) {
+      delete this;
+    }
+  }
+
   HANDLE event_handle() const { return m_event; }
 
-  HRESULT detach_cookie_list(ICoreWebView2CookieList **cookie_list) {
-    if (cookie_list == nullptr) {
-      return E_POINTER;
+  const wchar_t *url() const { return m_url.c_str(); }
+
+  void set_json(const std::string &payload) {
+    if (m_json == nullptr) {
+      m_json = copy_string(payload);
     }
-    *cookie_list = m_cookie_list;
-    m_cookie_list = nullptr;
-    return m_result;
+    signal();
+  }
+
+  void set_error(char *message) {
+    if (m_error == nullptr) {
+      m_error = message;
+    } else if (message != nullptr) {
+      free(message);
+    }
+    signal();
+  }
+
+  char *take_json() {
+    char *value = m_json;
+    m_json = nullptr;
+    return value;
+  }
+
+  char *take_error() {
+    char *value = m_error;
+    m_error = nullptr;
+    return value;
+  }
+
+private:
+  void signal() {
+    if (m_event != nullptr) {
+      SetEvent(m_event);
+    }
+  }
+
+  LONG m_ref_count = 1;
+  HANDLE m_event = nullptr;
+  std::wstring m_url;
+  char *m_json = nullptr;
+  char *m_error = nullptr;
+};
+
+static HRESULT serialize_cookie_list(ICoreWebView2CookieList *cookie_list,
+                                     std::string *payload) {
+  if (payload == nullptr) {
+    return E_POINTER;
+  }
+  *payload = "[";
+  UINT count = 0;
+  bool first = true;
+  if (cookie_list != nullptr) {
+    HRESULT hr = cookie_list->get_Count(&count);
+    if (FAILED(hr)) {
+      return hr;
+    }
+    for (UINT i = 0; i < count; ++i) {
+      ICoreWebView2Cookie *cookie = nullptr;
+      hr = cookie_list->GetValueAtIndex(i, &cookie);
+      if (FAILED(hr) || cookie == nullptr) {
+        continue;
+      }
+      if (!first) {
+        *payload += ",";
+      }
+      first = false;
+      *payload += json_for_cookie(cookie);
+      cookie->Release();
+    }
+  }
+  *payload += "]";
+  return S_OK;
+}
+
+class get_cookies_handler : public ICoreWebView2GetCookiesCompletedHandler {
+public:
+  explicit get_cookies_handler(get_cookies_request *request) : m_request(request) {
+    if (m_request != nullptr) {
+      m_request->AddRef();
+    }
+  }
+
+  ~get_cookies_handler() {
+    if (m_request != nullptr) {
+      m_request->Release();
+      m_request = nullptr;
+    }
   }
 
   ULONG STDMETHODCALLTYPE AddRef() override {
@@ -222,23 +319,53 @@ public:
 
   HRESULT STDMETHODCALLTYPE Invoke(HRESULT result,
                                    ICoreWebView2CookieList *cookie_list) override {
-    m_result = result;
-    if (cookie_list != nullptr) {
-      cookie_list->AddRef();
-      m_cookie_list = cookie_list;
+    if (m_request == nullptr) {
+      return S_OK;
     }
-    if (m_event != nullptr) {
-      SetEvent(m_event);
+    if (FAILED(result)) {
+      m_request->set_error(copy_hresult_error(result, "cookie callback failed"));
+      return S_OK;
     }
+
+    std::string payload;
+    HRESULT hr = serialize_cookie_list(cookie_list, &payload);
+    if (FAILED(hr)) {
+      m_request->set_error(copy_hresult_error(hr, "failed to serialize cookies"));
+      return S_OK;
+    }
+    m_request->set_json(payload);
     return S_OK;
   }
 
 private:
   LONG m_ref_count = 1;
-  HANDLE m_event = nullptr;
-  HRESULT m_result = E_FAIL;
-  ICoreWebView2CookieList *m_cookie_list = nullptr;
+  get_cookies_request *m_request = nullptr;
 };
+
+static void start_get_cookies_request(webview_t w, void *arg) {
+  auto *request = static_cast<get_cookies_request *>(arg);
+  if (request == nullptr) {
+    return;
+  }
+
+  ICoreWebView2CookieManager *manager = nullptr;
+  HRESULT hr = get_cookie_manager(w, &manager);
+  if (FAILED(hr)) {
+    request->set_error(
+        copy_hresult_error(hr, "failed to resolve ICoreWebView2CookieManager"));
+    request->Release();
+    return;
+  }
+
+  auto *handler = new get_cookies_handler(request);
+  hr = manager->GetCookies(request->url(), handler);
+  manager->Release();
+  handler->Release();
+  if (FAILED(hr)) {
+    request->set_error(copy_hresult_error(hr, "GetCookies failed"));
+  }
+  request->Release();
+}
 
 static bool wait_for_event_with_messages(HANDLE event_handle, DWORD timeout_ms) {
   DWORD start = GetTickCount();
@@ -346,76 +473,58 @@ extern "C" char *CgoWebViewGetCookies(webview_t w, const char *url, char **err) 
     *err = nullptr;
   }
 
-  ICoreWebView2CookieManager *manager = nullptr;
-  HRESULT hr = get_cookie_manager(w, &manager);
-  if (FAILED(hr)) {
-    if (err != nullptr) {
-      *err = copy_hresult_error(hr, "failed to resolve ICoreWebView2CookieManager");
-    }
-    return nullptr;
-  }
-
-  auto *handler = new get_cookies_handler();
-  if (handler->event_handle() == nullptr) {
-    manager->Release();
-    handler->Release();
+  auto *request = new get_cookies_request(url);
+  if (request->event_handle() == nullptr) {
+    request->Release();
     if (err != nullptr) {
       *err = copy_error("failed to create cookie wait event");
     }
     return nullptr;
   }
 
-  std::wstring uri = widen_string(url);
-  hr = manager->GetCookies(uri.c_str(), handler);
-  manager->Release();
-  if (FAILED(hr)) {
-    handler->Release();
-    if (err != nullptr) {
-      *err = copy_hresult_error(hr, "GetCookies failed");
-    }
-    return nullptr;
+  request->AddRef();
+  webview_dispatch(w, start_get_cookies_request, request);
+
+  auto hwnd = static_cast<HWND>(
+      webview_get_native_handle(w, WEBVIEW_NATIVE_HANDLE_KIND_UI_WINDOW));
+  DWORD ui_thread_id = hwnd ? GetWindowThreadProcessId(hwnd, nullptr) : 0;
+  bool completed = false;
+  if (ui_thread_id != 0 && ui_thread_id == GetCurrentThreadId()) {
+    completed = wait_for_event_with_messages(request->event_handle(), 5000);
+  } else {
+    completed = WaitForSingleObject(request->event_handle(), 5000) == WAIT_OBJECT_0;
   }
 
-  if (!wait_for_event_with_messages(handler->event_handle(), 5000)) {
-    handler->Release();
+  char *result = request->take_json();
+  char *request_error = request->take_error();
+  request->Release();
+
+  if (!completed) {
+    if (result != nullptr) {
+      free(result);
+    }
+    if (request_error != nullptr) {
+      free(request_error);
+    }
     if (err != nullptr) {
       *err = copy_error("timed out while reading cookies");
     }
     return nullptr;
   }
 
-  ICoreWebView2CookieList *cookie_list = nullptr;
-  hr = handler->detach_cookie_list(&cookie_list);
-  handler->Release();
-  if (FAILED(hr)) {
+  if (request_error != nullptr) {
+    if (result != nullptr) {
+      free(result);
+    }
     if (err != nullptr) {
-      *err = copy_hresult_error(hr, "cookie callback failed");
+      *err = request_error;
+    } else {
+      free(request_error);
     }
     return nullptr;
   }
 
-  std::string payload = "[";
-  UINT count = 0;
-  bool first = true;
-  if (cookie_list != nullptr) {
-    cookie_list->get_Count(&count);
-    for (UINT i = 0; i < count; ++i) {
-      ICoreWebView2Cookie *cookie = nullptr;
-      hr = cookie_list->GetValueAtIndex(i, &cookie);
-      if (FAILED(hr) || cookie == nullptr) {
-        continue;
-      }
-      if (!first) {
-        payload += ",";
-      }
-      first = false;
-      payload += json_for_cookie(cookie);
-      cookie->Release();
-    }
-    cookie_list->Release();
-  }
-  payload += "]";
-  return copy_string(payload);
+  return result;
 }
 
 extern "C" char *CgoWebViewSetCookie(webview_t w, const char *name,
