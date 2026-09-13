@@ -1282,6 +1282,7 @@ public:
       // Reuse the same context for concurrent pages belonging to one profile.
       // Calls are confined to the GTK main thread.
       static std::map<std::string, WebKitWebContext *> contexts;
+      static std::map<std::string, std::string> proxy_urls;
       const std::string path(options->data_path);
       auto &context = contexts[path];
       if (!context) {
@@ -1294,10 +1295,12 @@ public:
         auto cookie_path = path + "/cookies.sqlite";
         webkit_cookie_manager_set_persistent_storage(cookies, cookie_path.c_str(), WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
       }
-      if (options->proxy_url && *options->proxy_url) {
-        auto proxy = webkit_network_proxy_settings_new(options->proxy_url, nullptr);
+      std::string proxy_url = options->proxy_url ? options->proxy_url : "";
+      if (proxy_urls[path] != proxy_url) {
+        auto proxy = webkit_network_proxy_settings_new(proxy_url.c_str(), nullptr);
         webkit_website_data_manager_set_network_proxy_settings(
-            webkit_web_context_get_website_data_manager(context), WEBKIT_NETWORK_PROXY_MODE_CUSTOM, proxy);
+            webkit_web_context_get_website_data_manager(context), proxy_url.empty() ? WEBKIT_NETWORK_PROXY_MODE_DEFAULT : WEBKIT_NETWORK_PROXY_MODE_CUSTOM, proxy);
+        proxy_urls[path] = proxy_url;
         webkit_network_proxy_settings_free(proxy);
       }
       m_webview = webkit_web_view_new_with_context(context);
