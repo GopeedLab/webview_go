@@ -18,6 +18,7 @@ import (
 )
 
 func main() {
+	fmt.Printf("Native browser available: %v\n", webview.IsAvailable())
 	root, err := os.MkdirTemp("", "webview-profiles-")
 	if err != nil {
 		panic(err)

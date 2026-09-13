@@ -2925,6 +2925,7 @@ public:
     return E_NOINTERFACE;
   }
   HRESULT STDMETHODCALLTYPE Invoke(HRESULT res, ICoreWebView2Environment *env) {
+    if (FAILED(res)) fprintf(stderr, "WebView2 environment callback failed: 0x%08lx\n", static_cast<unsigned long>(res));
     if (SUCCEEDED(res)) {
       res = env->CreateCoreWebView2Controller(m_window, this);
       if (SUCCEEDED(res)) {
@@ -3042,7 +3043,8 @@ private:
 // Minimal per-environment options; never mutate process-wide environment variables.
 class gopeed_environment_options : public ICoreWebView2EnvironmentOptions {
   std::atomic<ULONG> refs{1};
-  std::wstring args, language, version;
+  std::wstring args, language;
+  std::wstring version = L"89.0.765.0";
   BOOL sso = FALSE;
   HRESULT copy(const std::wstring &s, LPWSTR *out) {
     if (!out) return E_POINTER;
@@ -3467,8 +3469,10 @@ private:
     auto proxy = m_options && m_options->proxy_url ? widen_string(m_options->proxy_url) : std::wstring{};
     auto envOptions = new gopeed_environment_options(proxy.empty() ? L"" : L"--proxy-server=" + proxy + L" --proxy-bypass-list=<-loopback>");
     m_com_handler->set_attempt_handler([&] {
-      return m_webview2_loader.create_environment_with_options(
+      auto result = m_webview2_loader.create_environment_with_options(
           nullptr, customPath.empty() ? userDataFolder : customPath.c_str(), envOptions, m_com_handler);
+      if (FAILED(result)) fprintf(stderr, "WebView2 environment creation failed: 0x%08lx\n", static_cast<unsigned long>(result));
+      return result;
     });
     m_com_handler->try_create_environment();
 
