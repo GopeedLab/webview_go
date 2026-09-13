@@ -9,7 +9,7 @@ package webview
 #cgo linux openbsd freebsd netbsd pkg-config: gtk+-3.0 webkit2gtk-4.1
 
 #cgo darwin CXXFLAGS: -DWEBVIEW_COCOA -std=c++11
-#cgo darwin LDFLAGS: -framework WebKit -ldl
+#cgo darwin LDFLAGS: -framework WebKit -framework Network -ldl
 
 #cgo windows CXXFLAGS: -DWEBVIEW_EDGE -std=c++14 -I${SRCDIR}/libs/mswebview2/include
 #cgo windows LDFLAGS: -static -ladvapi32 -lole32 -lshell32 -lshlwapi -luser32 -lversion -luuid
@@ -29,10 +29,16 @@ void CgoWebViewDestroyHiddenWindow(void *hwnd);
 */
 import "C"
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -197,6 +203,60 @@ func NewWindow(debug bool, window unsafe.Pointer) WebView {
 	w.w = C.webview_create(boolToInt(debug), window)
 	C.CgoWebViewEnableWindowClose(w.w)
 	return w
+}
+
+// Options configures a browser at creation time. DataPath identifies an isolated,
+// persistent profile and must be reused for pages sharing website state.
+// ProxyURL is an HTTP or SOCKS5 proxy endpoint without credentials; the host may provide
+// a loopback forwarding proxy to handle upstream authentication and routing.
+type Options struct {
+	Debug    bool
+	Headless bool
+	DataPath string
+	ProxyURL string
+}
+
+// NewWithOptions creates a configured browser or returns an initialization error.
+// Call on the platform UI thread, just like New.
+func NewWithOptions(opts Options) (WebView, error) {
+	if opts.DataPath == "" {
+		return nil, errors.New("profile data path is required")
+	}
+	path, err := filepath.Abs(opts.DataPath)
+	if err != nil {
+		return nil, err
+	}
+	if opts.ProxyURL != "" {
+		u, err := url.Parse(opts.ProxyURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "socks5") || u.Hostname() == "" || u.Port() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(opts.ProxyURL, " \t\r\n\"") {
+			return nil, errors.New("proxy must be an HTTP or SOCKS5 endpoint with an explicit port and no credentials")
+		}
+	}
+	if err := os.MkdirAll(path, 0700); err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(path))
+	profileID := fmt.Sprintf("%x-%x-%x-%x-%x", sum[:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
+	data := C.CString(path)
+	profile := C.CString(profileID)
+	proxy := C.CString(opts.ProxyURL)
+	defer C.free(unsafe.Pointer(data))
+	defer C.free(unsafe.Pointer(profile))
+	defer C.free(unsafe.Pointer(proxy))
+	config := C.webview_options_t{data_path: data, profile_id: profile, proxy_url: proxy}
+	w := &webview{}
+	if opts.Headless {
+		w.headlessWnd = C.CgoWebViewCreateHiddenWindow()
+	}
+	w.w = C.webview_create_with_options(boolToInt(opts.Debug), w.headlessWnd, &config)
+	if w.w == nil {
+		if w.headlessWnd != nil {
+			C.CgoWebViewDestroyHiddenWindow(w.headlessWnd)
+		}
+		return nil, errors.New("failed to create configured webview (macOS requires 14 or newer)")
+	}
+	C.CgoWebViewEnableWindowClose(w.w)
+	return w, nil
 }
 
 func (w *webview) Destroy() {

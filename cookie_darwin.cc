@@ -137,7 +137,7 @@ extern "C" char *CgoWebViewGetCookies(webview_t w, const char *url_cstr,
     __block BOOL done = NO;
     __block NSArray<NSHTTPCookie *> *cookies = nil;
     [store getAllCookies:^(NSArray<NSHTTPCookie *> *all_cookies) {
-      cookies = all_cookies;
+      cookies = [all_cookies retain];
       done = YES;
     }];
     if (!wait_until_done(&done, 5.0)) {
@@ -147,6 +147,7 @@ extern "C" char *CgoWebViewGetCookies(webview_t w, const char *url_cstr,
       return nullptr;
     }
 
+    [cookies autorelease];
     NSMutableArray *payload = [NSMutableArray array];
     for (NSHTTPCookie *cookie in cookies) {
       if (!cookie_matches_url(cookie, url)) {
@@ -263,13 +264,14 @@ extern "C" char *CgoWebViewDeleteCookie(webview_t w, const char *name,
     __block BOOL fetched = NO;
     __block NSArray<NSHTTPCookie *> *cookies = nil;
     [store getAllCookies:^(NSArray<NSHTTPCookie *> *all_cookies) {
-      cookies = all_cookies;
+      cookies = [all_cookies retain];
       fetched = YES;
     }];
     if (!wait_until_done(&fetched, 5.0)) {
       return copy_error(@"timed out while reading cookies");
     }
 
+    [cookies autorelease];
     __block NSUInteger pending = 0;
     __block BOOL delete_done = NO;
     for (NSHTTPCookie *cookie in cookies) {
@@ -314,13 +316,14 @@ extern "C" char *CgoWebViewClearCookies(webview_t w) {
     __block BOOL fetched = NO;
     __block NSArray<NSHTTPCookie *> *cookies = nil;
     [store getAllCookies:^(NSArray<NSHTTPCookie *> *all_cookies) {
-      cookies = all_cookies;
+      cookies = [all_cookies retain];
       fetched = YES;
     }];
     if (!wait_until_done(&fetched, 5.0)) {
       return copy_error(@"timed out while reading cookies");
     }
 
+    [cookies autorelease];
     __block NSUInteger pending = 0;
     __block BOOL delete_done = NO;
     for (NSHTTPCookie *cookie in cookies) {

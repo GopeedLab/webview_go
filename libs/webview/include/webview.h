@@ -191,6 +191,17 @@ extern "C" {
  *         creation fails.
  */
 WEBVIEW_API webview_t webview_create(int debug, void *window);
+// Host-only creation configuration. Strings are borrowed during construction.
+typedef struct {
+  const char *data_path;
+  const char *profile_id;
+  const char *proxy_url;
+} webview_options_t;
+WEBVIEW_API webview_t webview_create_with_options(int debug, void *window,
+                                                 const webview_options_t *options);
+#ifdef WEBVIEW_COCOA
+extern void CgoWebViewConfigureDataStore(void *config, const webview_options_t *options);
+#endif
 
 /**
  * Destroys a webview instance and closes the native window.
@@ -1247,7 +1258,7 @@ constexpr auto webkit_web_view_run_javascript =
 
 class gtk_webkit_engine : public engine_base {
 public:
-  gtk_webkit_engine(bool debug, void *window)
+  gtk_webkit_engine(bool debug, void *window, const webview_options_t *options = nullptr)
       : m_owns_window{!window}, m_window(static_cast<GtkWidget *>(window)) {
     if (m_owns_window) {
       if (gtk_init_check(nullptr, nullptr) == FALSE) {
@@ -1267,7 +1278,32 @@ public:
     }
     webkit_dmabuf::apply_webkit_dmabuf_workaround();
     // Initialize webview widget
-    m_webview = webkit_web_view_new();
+    if (options && options->data_path && *options->data_path) {
+      // Reuse the same context for concurrent pages belonging to one profile.
+      // Calls are confined to the GTK main thread.
+      static std::map<std::string, WebKitWebContext *> contexts;
+      const std::string path(options->data_path);
+      auto &context = contexts[path];
+      if (!context) {
+        auto cache = path + "/cache";
+        auto manager = webkit_website_data_manager_new(
+            "base-data-directory", path.c_str(), "base-cache-directory", cache.c_str(), nullptr);
+        context = webkit_web_context_new_with_website_data_manager(manager);
+        g_object_unref(manager);
+        auto cookies = webkit_web_context_get_cookie_manager(context);
+        auto cookie_path = path + "/cookies.sqlite";
+        webkit_cookie_manager_set_persistent_storage(cookies, cookie_path.c_str(), WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+      }
+      if (options->proxy_url && *options->proxy_url) {
+        auto proxy = webkit_network_proxy_settings_new(options->proxy_url, nullptr);
+        webkit_website_data_manager_set_network_proxy_settings(
+            webkit_web_context_get_website_data_manager(context), WEBKIT_NETWORK_PROXY_MODE_CUSTOM, proxy);
+        webkit_network_proxy_settings_free(proxy);
+      }
+      m_webview = webkit_web_view_new_with_context(context);
+    } else {
+      m_webview = webkit_web_view_new();
+    }
     WebKitUserContentManager *manager =
         webkit_web_view_get_user_content_manager(WEBKIT_WEB_VIEW(m_webview));
     g_signal_connect(manager, "script-message-received::external",
@@ -1571,9 +1607,9 @@ inline id operator"" _str(const char *s, std::size_t) {
 
 class cocoa_wkwebview_engine : public engine_base {
 public:
-  cocoa_wkwebview_engine(bool debug, void *window)
+  cocoa_wkwebview_engine(bool debug, void *window, const webview_options_t *options = nullptr)
       : m_debug{debug}, m_window{static_cast<id>(window)}, m_owns_window{
-                                                               !window} {
+                                                               !window}, m_options{options} {
     auto app = get_shared_application();
     // See comments related to application lifecycle in create_app_delegate().
     if (!m_owns_window) {
@@ -1946,12 +1982,15 @@ private:
       objc::msg_send<void>(m_window, "makeKeyAndOrderFront:"_sel, nullptr);
     }
   }
+  const webview_options_t *m_options = nullptr;
+
   void set_up_web_view() {
     objc::autoreleasepool arp;
 
     auto config = objc::autoreleased(
         objc::msg_send<id>("WKWebViewConfiguration"_cls, "new"_sel));
 
+    CgoWebViewConfigureDataStore(config, m_options);
     m_manager = objc::msg_send<id>(config, "userContentController"_sel);
     m_webview = objc::msg_send<id>("WKWebView"_cls, "alloc"_sel);
 
@@ -3000,9 +3039,44 @@ private:
   unsigned int m_attempts = 0;
 };
 
+// Minimal per-environment options; never mutate process-wide environment variables.
+class gopeed_environment_options : public ICoreWebView2EnvironmentOptions {
+  std::atomic<ULONG> refs{1};
+  std::wstring args, language, version;
+  BOOL sso = FALSE;
+  HRESULT copy(const std::wstring &s, LPWSTR *out) {
+    if (!out) return E_POINTER;
+    *out = static_cast<LPWSTR>(CoTaskMemAlloc((s.size() + 1) * sizeof(wchar_t)));
+    if (!*out) return E_OUTOFMEMORY;
+    memcpy(*out, s.c_str(), (s.size() + 1) * sizeof(wchar_t));
+    return S_OK;
+  }
+public:
+  explicit gopeed_environment_options(std::wstring value) : args(std::move(value)) {}
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    const IID optionsIID = {0x2fde08a8, 0x1e9a, 0x4766, {0x8c,0x05,0x95,0xa9,0xce,0xb9,0xd1,0xc5}};
+    if (IsEqualIID(iid, IID_IUnknown) || IsEqualIID(iid, optionsIID)) {
+      *out = static_cast<ICoreWebView2EnvironmentOptions *>(this); AddRef(); return S_OK;
+    }
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+  ULONG STDMETHODCALLTYPE Release() override { auto n = --refs; if (!n) delete this; return n; }
+  HRESULT STDMETHODCALLTYPE get_AdditionalBrowserArguments(LPWSTR *v) override { return copy(args, v); }
+  HRESULT STDMETHODCALLTYPE put_AdditionalBrowserArguments(LPCWSTR v) override { args = v ? v : L""; return S_OK; }
+  HRESULT STDMETHODCALLTYPE get_Language(LPWSTR *v) override { return copy(language, v); }
+  HRESULT STDMETHODCALLTYPE put_Language(LPCWSTR v) override { language = v ? v : L""; return S_OK; }
+  HRESULT STDMETHODCALLTYPE get_TargetCompatibleBrowserVersion(LPWSTR *v) override { return copy(version, v); }
+  HRESULT STDMETHODCALLTYPE put_TargetCompatibleBrowserVersion(LPCWSTR v) override { version = v ? v : L""; return S_OK; }
+  HRESULT STDMETHODCALLTYPE get_AllowSingleSignOnUsingOSPrimaryAccount(BOOL *v) override { if (!v) return E_POINTER; *v = sso; return S_OK; }
+  HRESULT STDMETHODCALLTYPE put_AllowSingleSignOnUsingOSPrimaryAccount(BOOL v) override { sso = v; return S_OK; }
+};
+
 class win32_edge_engine : public engine_base {
 public:
-  win32_edge_engine(bool debug, void *window) : m_owns_window{!window} {
+  win32_edge_engine(bool debug, void *window, const webview_options_t *options = nullptr) : m_owns_window{!window}, m_options{options} {
     if (!is_webview2_available()) {
       return;
     }
@@ -3357,6 +3431,8 @@ public:
   }
 
 private:
+  const webview_options_t *m_options = nullptr;
+
   bool embed(HWND wnd, bool debug, msg_cb_t cb) {
     std::atomic_flag flag = ATOMIC_FLAG_INIT;
     flag.test_and_set();
@@ -3387,9 +3463,12 @@ private:
           flag.clear();
         });
 
+    auto customPath = m_options && m_options->data_path ? widen_string(m_options->data_path) : std::wstring{};
+    auto proxy = m_options && m_options->proxy_url ? widen_string(m_options->proxy_url) : std::wstring{};
+    auto envOptions = new gopeed_environment_options(proxy.empty() ? L"" : L"--proxy-server=" + proxy + L" --proxy-bypass-list=<-loopback>");
     m_com_handler->set_attempt_handler([&] {
       return m_webview2_loader.create_environment_with_options(
-          nullptr, userDataFolder, nullptr, m_com_handler);
+          nullptr, customPath.empty() ? userDataFolder : customPath.c_str(), envOptions, m_com_handler);
     });
     m_com_handler->try_create_environment();
 
@@ -3404,6 +3483,7 @@ private:
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
     }
+    envOptions->Release();
     if (got_quit_msg) {
       return false;
     }
@@ -3551,6 +3631,16 @@ WEBVIEW_API webview_t webview_create(int debug, void *wnd) {
     return nullptr;
   }
   return w;
+}
+
+WEBVIEW_API webview_t webview_create_with_options(int debug, void *wnd, const webview_options_t *options) {
+  try {
+    auto w = new webview::webview(debug, wnd, options);
+    if (!w->window() || !w->browser_controller()) { delete w; return nullptr; }
+    return w;
+  } catch (...) {
+    return nullptr;
+  }
 }
 
 WEBVIEW_API void webview_destroy(webview_t w) {

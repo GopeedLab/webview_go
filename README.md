@@ -53,3 +53,24 @@ Cookie APIs are available through `GetCookies`, `SetCookie`, `DeleteCookie`, and
 [go-docs]: https://pkg.go.dev/github.com/GopeedLab/webview_go
 [upstream]: https://github.com/webview/webview_go
 [webview]: https://github.com/webview/webview
+
+### Host-owned profiles and proxy routing
+
+`NewWithOptions` accepts an absolute profile data directory and an HTTP or SOCKS5
+proxy endpoint before the native browser is created. Reuse the directory for
+pages that should share cookies and website storage; use different directories
+for independent profiles. The native Cookie APIs use the selected browser store.
+
+On macOS, named persistent stores and proxy configuration require macOS 14+.
+Use a SOCKS5 endpoint on Apple platforms to route both HTTP and HTTPS. An HTTP
+CONNECT configuration may leave plain HTTP outside the configured proxy.
+Windows uses a per-environment user data folder and browser arguments; GTK uses
+a per-profile website data manager and context. No process-wide proxy/profile
+environment variables are modified.
+
+The host may supply a loopback forwarding proxy to keep upstream credentials and
+routing policy out of the browser. `ProxyURL` itself does not accept credentials.
+Calls retain the same platform UI-thread requirements as `New`.
+
+Run `go run ./examples/profilecheck` on a desktop session (or under `xvfb-run` on
+Linux) to verify routing, native cookies, profile isolation, and reopening.

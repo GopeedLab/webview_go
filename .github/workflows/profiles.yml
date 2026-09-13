@@ -1,0 +1,21 @@
+name: Native profiles
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  profile-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.4'
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev xvfb
+      - run: go test ./...
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a go run ./examples/profilecheck
+      - if: runner.os != 'Linux'
+        run: go run ./examples/profilecheck
