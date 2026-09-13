@@ -24,8 +24,10 @@ func main() {
 		panic(err)
 	}
 	defer os.RemoveAll(root)
-	var hits int32
+	var hits, requests int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprint(w, `<script>window.onload=async()=>{
      const before=localStorage.getItem('owner')||'';
@@ -113,7 +115,7 @@ func main() {
 			panic(err)
 		}
 	}
-	if atomic.LoadInt32(&hits) < 3 {
+	if atomic.LoadInt32(&hits) == 0 || atomic.LoadInt32(&requests) < 3 {
 		panic("navigation bypassed configured proxy")
 	}
 	fmt.Println("PASS: proxy routing, native cookies, profile isolation and reopening")
