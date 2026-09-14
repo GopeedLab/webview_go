@@ -74,3 +74,8 @@ Calls retain the same platform UI-thread requirements as `New`.
 
 Run `go run ./examples/profilecheck` on a desktop session (or under `xvfb-run` on
 Linux) to verify routing, native cookies, profile isolation, and reopening.
+
+Host applications can call `RemoveProfile(dataPath)` after destroying all WebViews
+using that profile. It removes the named WebKit store on macOS, releases and clears
+the GTK profile context, and deletes the Windows/Linux data directory. Like browser
+creation, profile removal belongs to the host lifecycle, not page JavaScript.

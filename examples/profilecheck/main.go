@@ -78,7 +78,16 @@ func main() {
 			}
 		}()
 	}
-	for _, tc := range []struct{ profile, want string }{{"a", ""}, {"b", ""}, {"a", "saved"}} {
+	for _, tc := range []struct{ profile, want string }{{"a", ""}, {"b", ""}, {"a", "saved"}, {"remove-a", ""}, {"a", ""}, {"b", "saved"}} {
+		if tc.profile == "remove-a" {
+			if err := webview.RemoveProfile(filepath.Join(root, "a")); err != nil {
+				panic(err)
+			}
+			if err := webview.RemoveProfile(filepath.Join(root, "a")); err != nil {
+				panic(err)
+			}
+			continue
+		}
 		w, err := webview.NewWithOptions(webview.Options{Headless: true, DataPath: filepath.Join(root, tc.profile), ProxyURL: proxyURL})
 		if err != nil {
 			panic(err)
@@ -118,7 +127,7 @@ func main() {
 	if atomic.LoadInt32(&hits) == 0 || atomic.LoadInt32(&requests) < 3 {
 		panic("navigation bypassed configured proxy")
 	}
-	fmt.Println("PASS: proxy routing, native cookies, profile isolation and reopening")
+	fmt.Println("PASS: proxy routing, native cookies, profile isolation, reopening and deletion")
 }
 
 func serveSOCKS(c net.Conn, origin string, hits *int32) {

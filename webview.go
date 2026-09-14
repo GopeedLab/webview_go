@@ -40,6 +40,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	_ "github.com/GopeedLab/webview_go/libs/mswebview2"
@@ -443,4 +444,36 @@ func (w *webview) Unbind(name string) error {
 	defer C.free(unsafe.Pointer(cname))
 	C.CgoWebViewUnbind(w.w, cname)
 	return nil
+}
+
+// RemoveProfile deletes a host-owned persistent profile after all its WebViews
+// have been destroyed. Call on the platform UI thread, like NewWithOptions.
+func RemoveProfile(dataPath string) error {
+	if dataPath == "" {
+		return errors.New("profile data path is required")
+	}
+	path, err := filepath.Abs(dataPath)
+	if err != nil {
+		return err
+	}
+	if filepath.Dir(path) == path {
+		return errors.New("refusing to remove filesystem root")
+	}
+	sum := sha256.Sum256([]byte(path))
+	id := fmt.Sprintf("%x-%x-%x-%x-%x", sum[:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
+	cpath, cid := C.CString(path), C.CString(id)
+	defer C.free(unsafe.Pointer(cpath))
+	defer C.free(unsafe.Pointer(cid))
+	if C.webview_remove_profile(cpath, cid) != 0 {
+		return errors.New("failed to remove native WebView profile")
+	}
+	// WebView2 may hold files briefly while its browser process shuts down.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err = os.RemoveAll(path)
+		if err == nil || runtime.GOOS != "windows" || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }

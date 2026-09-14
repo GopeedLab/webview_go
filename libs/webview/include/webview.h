@@ -197,9 +197,12 @@ typedef struct {
   const char *profile_id;
   const char *proxy_url;
 } webview_options_t;
+WEBVIEW_API int webview_remove_profile(const char *data_path, const char *profile_id);
+
 WEBVIEW_API webview_t webview_create_with_options(int debug, void *window,
                                                  const webview_options_t *options);
 #ifdef WEBVIEW_COCOA
+extern int CgoWebViewRemoveDataStore(const char *identifier);
 extern void CgoWebViewConfigureDataStore(void *config, const webview_options_t *options);
 #endif
 
@@ -1258,6 +1261,35 @@ constexpr auto webkit_web_view_run_javascript =
 
 class gtk_webkit_engine : public engine_base {
 public:
+  static std::map<std::string, WebKitWebContext *> &profile_contexts() {
+    static std::map<std::string, WebKitWebContext *> value; return value;
+  }
+  static std::map<std::string, std::string> &profile_proxies() {
+    static std::map<std::string, std::string> value; return value;
+  }
+  static int remove_profile(const std::string &path) {
+    auto &contexts = profile_contexts();
+    auto it = contexts.find(path);
+    if (it != contexts.end()) {
+      auto manager = webkit_web_context_get_website_data_manager(it->second);
+      struct clear_result { bool done = false; bool ok = false; } result;
+      webkit_website_data_manager_clear(manager, WEBKIT_WEBSITE_DATA_ALL, 0, nullptr,
+          [](GObject *source, GAsyncResult *res, gpointer data) {
+            auto result = static_cast<clear_result *>(data);
+            GError *error = nullptr;
+            result->ok = webkit_website_data_manager_clear_finish(WEBKIT_WEBSITE_DATA_MANAGER(source), res, &error);
+            if (error) g_error_free(error);
+            result->done = true;
+          }, &result);
+      while (!result.done) g_main_context_iteration(nullptr, TRUE);
+      if (!result.ok) return -1;
+      g_object_unref(it->second);
+      contexts.erase(it);
+    }
+    profile_proxies().erase(path);
+    return 0;
+  }
+
   gtk_webkit_engine(bool debug, void *window, const webview_options_t *options = nullptr)
       : m_owns_window{!window}, m_window(static_cast<GtkWidget *>(window)) {
     if (m_owns_window) {
@@ -1281,8 +1313,8 @@ public:
     if (options && options->data_path && *options->data_path) {
       // Reuse the same context for concurrent pages belonging to one profile.
       // Calls are confined to the GTK main thread.
-      static std::map<std::string, WebKitWebContext *> contexts;
-      static std::map<std::string, std::string> proxy_urls;
+      auto &contexts = profile_contexts();
+      auto &proxy_urls = profile_proxies();
       const std::string path(options->data_path);
       auto &context = contexts[path];
       if (!context) {
@@ -3648,6 +3680,41 @@ WEBVIEW_API webview_t webview_create_with_options(int debug, void *wnd, const we
   } catch (...) {
     return nullptr;
   }
+}
+
+WEBVIEW_API int webview_remove_profile(const char *data_path, const char *profile_id) {
+#if defined(WEBVIEW_GTK)
+  struct removal_request {
+    const char *path;
+    GMutex mutex;
+    GCond condition;
+    bool done = false;
+    int result = -1;
+  } request;
+  request.path = data_path;
+  g_mutex_init(&request.mutex);
+  g_cond_init(&request.condition);
+  g_main_context_invoke(nullptr, [](gpointer data) -> gboolean {
+    auto request = static_cast<removal_request *>(data);
+    int result = webview::detail::gtk_webkit_engine::remove_profile(request->path);
+    g_mutex_lock(&request->mutex);
+    request->result = result;
+    request->done = true;
+    g_cond_signal(&request->condition);
+    g_mutex_unlock(&request->mutex);
+    return G_SOURCE_REMOVE;
+  }, &request);
+  g_mutex_lock(&request.mutex);
+  while (!request.done) g_cond_wait(&request.condition, &request.mutex);
+  g_mutex_unlock(&request.mutex);
+  g_cond_clear(&request.condition);
+  g_mutex_clear(&request.mutex);
+  return request.result;
+#elif defined(WEBVIEW_COCOA)
+  return CgoWebViewRemoveDataStore(profile_id);
+#else
+  return 0;
+#endif
 }
 
 WEBVIEW_API void webview_destroy(webview_t w) {
