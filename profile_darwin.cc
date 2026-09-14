@@ -53,6 +53,20 @@ extern "C" int CgoWebViewRemoveDataStore(const char *rawIdentifier) {
       NSString *identifier = [NSString stringWithUTF8String:rawIdentifier];
       NSUUID *uuid = [[[NSUUID alloc] initWithUUIDString:identifier] autorelease];
       if (!uuid) return -1;
+      @autoreleasepool {
+        WKWebsiteDataStore *store = [profile_stores() objectForKey:identifier];
+        if (!store) store = [WKWebsiteDataStore dataStoreForIdentifier:uuid];
+        __block BOOL cleared = NO;
+        [store removeDataOfTypes:[WKWebsiteDataStore allWebsiteDataTypes]
+                  modifiedSince:[NSDate distantPast] completionHandler:^{ cleared = YES; }];
+        NSDate *clearDeadline = [NSDate dateWithTimeIntervalSinceNow:30];
+        while (!cleared && [clearDeadline timeIntervalSinceNow] > 0) {
+          @autoreleasepool {
+            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+          }
+        }
+        if (!cleared) return -1;
+      }
       [profile_stores() removeObjectForKey:identifier];
       [profile_proxies() removeObjectForKey:identifier];
       // WebKit releases its network process reference asynchronously after

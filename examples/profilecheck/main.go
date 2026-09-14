@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -32,8 +33,10 @@ func main() {
 		fmt.Fprint(w, `<script>window.onload=async()=>{
      const before=localStorage.getItem('owner')||'';
      if(!before)localStorage.setItem('owner','saved');
+     const cookieBefore=document.cookie.split('; ').filter(Boolean).sort().join('; ');
      document.cookie='native_cookie=yes; max-age=3600; path=/';
-     await report(before);
+     document.cookie='session_cookie=yes; path=/';
+     await report(before + '|' + cookieBefore);
    };</script>`)
 	}))
 	defer origin.Close()
@@ -98,8 +101,13 @@ func main() {
 		go func() {
 			select {
 			case value := <-result:
-				if value != tc.want {
-					done <- fmt.Errorf("profile %s: got %q want %q", tc.profile, value, tc.want)
+				want := tc.want + "|"
+				if tc.want != "" {
+					want += "native_cookie=yes"
+					value = strings.TrimSuffix(value, "; session_cookie=yes")
+				}
+				if value != want {
+					done <- fmt.Errorf("profile %s: got %q want %q", tc.profile, value, want)
 					w.Terminate()
 					return
 				}
