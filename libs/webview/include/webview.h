@@ -3327,6 +3327,11 @@ public:
   }
 
   virtual ~win32_edge_engine() {
+    // Close explicitly before releasing COM references so WebView2 can finish
+    // the controller lifecycle while its owning apartment is still alive.
+    if (m_controller) {
+      m_controller->Close();
+    }
     if (m_com_handler) {
       m_com_handler->Release();
       m_com_handler = nullptr;
