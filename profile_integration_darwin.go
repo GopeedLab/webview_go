@@ -1,4 +1,7 @@
-package main
+//go:build webview_integration
+// +build webview_integration
+
+package webview
 
 /*
 // The fixture uses cleartext HTTP on a synthetic domain. Keep this test-only

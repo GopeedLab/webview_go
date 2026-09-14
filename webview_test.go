@@ -41,10 +41,23 @@ func Example() {
 	w.Run()
 }
 
+var testMainTasks = make(chan func())
+
 func TestMain(m *testing.M) {
 	flag.Parse()
 	if testing.Verbose() {
 		Example()
 	}
-	os.Exit(m.Run())
+	// Native integration tests must create and destroy views on the main OS
+	// thread. Test functions run on testing goroutines and dispatch work here.
+	finished := make(chan int, 1)
+	go func() { finished <- m.Run() }()
+	for {
+		select {
+		case task := <-testMainTasks:
+			task()
+		case code := <-finished:
+			os.Exit(code)
+		}
+	}
 }

@@ -1,6 +1,7 @@
-// profilecheck exercises native profile isolation and proxy routing on a real
-// desktop WebView. Run with `go run ./examples/profilecheck` on a desktop session.
-package main
+//go:build webview_integration
+// +build webview_integration
+
+package webview
 
 import (
 	"fmt"
@@ -15,14 +16,22 @@ import (
 	"sync/atomic"
 	"time"
 
-	webview "github.com/GopeedLab/webview_go"
+	"testing"
 )
 
-func main() {
-	fmt.Printf("Native browser available: %v\n", webview.IsAvailable())
+func TestProfileLifecycle(t *testing.T) {
+	done := make(chan error, 1)
+	testMainTasks <- func() { done <- checkProfileLifecycle() }
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func checkProfileLifecycle() error {
+	fmt.Printf("Native browser available: %v\n", IsAvailable())
 	root, err := os.MkdirTemp("", "webview-profiles-")
 	if err != nil {
-		panic(err)
+		return err
 	}
 	defer os.RemoveAll(root)
 	var hits, requests int32
@@ -67,7 +76,7 @@ func main() {
 	if runtime.GOOS == "darwin" {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			panic(err)
+			return err
 		}
 		defer listener.Close()
 		proxyURL = "socks5://" + listener.Addr().String()
@@ -83,17 +92,17 @@ func main() {
 	}
 	for _, tc := range []struct{ profile, want string }{{"a", ""}, {"b", ""}, {"a", "saved"}, {"remove-a", ""}, {"a", ""}, {"b", "saved"}} {
 		if tc.profile == "remove-a" {
-			if err := webview.RemoveProfile(filepath.Join(root, "a")); err != nil {
-				panic(err)
+			if err := RemoveProfile(filepath.Join(root, "a")); err != nil {
+				return err
 			}
-			if err := webview.RemoveProfile(filepath.Join(root, "a")); err != nil {
-				panic(err)
+			if err := RemoveProfile(filepath.Join(root, "a")); err != nil {
+				return err
 			}
 			continue
 		}
-		w, err := webview.NewWithOptions(webview.Options{Headless: true, DataPath: filepath.Join(root, tc.profile), ProxyURL: proxyURL})
+		w, err := NewWithOptions(Options{Headless: true, DataPath: filepath.Join(root, tc.profile), ProxyURL: proxyURL})
 		if err != nil {
-			panic(err)
+			return err
 		}
 		result := make(chan string, 1)
 		w.Bind("report", func(value string) { result <- value })
@@ -129,13 +138,13 @@ func main() {
 		err = <-done
 		w.Destroy()
 		if err != nil {
-			panic(err)
+			return err
 		}
 	}
 	if atomic.LoadInt32(&hits) == 0 || atomic.LoadInt32(&requests) < 3 {
-		panic("navigation bypassed configured proxy")
+		return fmt.Errorf("navigation bypassed configured proxy")
 	}
-	fmt.Println("PASS: proxy routing, native cookies, profile isolation, reopening and deletion")
+	return nil
 }
 
 func serveSOCKS(c net.Conn, origin string, hits *int32) {

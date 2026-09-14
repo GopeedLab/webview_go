@@ -1,5 +1,5 @@
 name: CI Pipeline
-on: [ push, pull_request ]
+on: [ push, pull_request, workflow_dispatch ]
 
 jobs:
   build:
@@ -13,21 +13,19 @@ jobs:
         # Go 1.14 made -mod=vendor default.
         # Go 1.13 is the version set in go.mod.
         include:
-          - { image: macos-14, go: "1.22" }
+          - { image: macos-14, go: "1.22", native: true }
           - { image: macos-14, go: "1.21" }
           - { image: macos-14, go: "1.20" }
           # Go 1.19 is the earliest version available for ARM64.
           - { image: macos-14, go: "1.19" }
-          # macos-12 runner has x86_64 support which is needed for old versions of Go
-          - { image: macos-12, go: "1.18" }
-          - { image: macos-12, go: "1.17" }
-          - { image: macos-12, go: "1.16" }
-          - { image: macos-12, go: "1.15" }
-          - { image: macos-12, go: "1.14" }
-          - { image: macos-12, go: "1.13" }
-          - { image: ubuntu-22.04, go: "1.22", apt: libgtk-4-dev libwebkitgtk-6.0-dev }
-          - { image: ubuntu-22.04, go: "1.22", apt: libgtk-3-dev libwebkit2gtk-4.1-dev }
-          - { image: ubuntu-22.04, go: "1.22", apt: libgtk-3-dev libwebkit2gtk-4.1-dev }
+          # macos-15-intel runner has x86_64 support which is needed for old versions of Go
+          - { image: macos-15-intel, go: "1.18" }
+          - { image: macos-15-intel, go: "1.17" }
+          - { image: macos-15-intel, go: "1.16" }
+          - { image: macos-15-intel, go: "1.15" }
+          - { image: macos-15-intel, go: "1.14" }
+          - { image: macos-15-intel, go: "1.13" }
+          - { image: ubuntu-22.04, go: "1.22", native: true, apt: libgtk-3-dev libwebkit2gtk-4.1-dev }
           - { image: ubuntu-22.04, go: "1.21", apt: libgtk-3-dev libwebkit2gtk-4.1-dev }
           - { image: ubuntu-22.04, go: "1.20", apt: libgtk-3-dev libwebkit2gtk-4.1-dev }
           - { image: ubuntu-22.04, go: "1.19", apt: libgtk-3-dev libwebkit2gtk-4.1-dev }
@@ -37,7 +35,7 @@ jobs:
           - { image: ubuntu-22.04, go: "1.15", apt: libgtk-3-dev libwebkit2gtk-4.1-dev }
           - { image: ubuntu-22.04, go: "1.14", apt: libgtk-3-dev libwebkit2gtk-4.1-dev }
           - { image: ubuntu-22.04, go: "1.13", apt: libgtk-3-dev libwebkit2gtk-4.1-dev }
-          - { image: windows-2022, go: "1.22" }
+          - { image: windows-2022, go: "1.22", native: true }
           - { image: windows-2022, go: "1.21" }
           # Go 1.20 is the earliest version that is usable in this environment as of 2024-08-31.
           # Compilation fails with older versions:
@@ -49,7 +47,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }} xvfb
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
@@ -58,3 +56,9 @@ jobs:
           go build ./examples/basic ./examples/bind
       - name: Run tests
         run: go test
+      - name: Run native WebView integration tests
+        if: matrix.native && runner.os == 'Linux'
+        run: xvfb-run -a go test -tags webview_integration -v -count=1 -timeout 180s .
+      - name: Run native WebView integration tests
+        if: matrix.native && runner.os != 'Linux'
+        run: go test -tags webview_integration -v -count=1 -timeout 180s .

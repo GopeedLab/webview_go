@@ -72,7 +72,7 @@ The host may supply a loopback forwarding proxy to keep upstream credentials and
 routing policy out of the browser. `ProxyURL` itself does not accept credentials.
 Calls retain the same platform UI-thread requirements as `New`.
 
-Run `go run ./examples/profilecheck` on a desktop session (or under `xvfb-run` on
+Run `go test -tags webview_integration -v -count=1 .` on a desktop session (or under `xvfb-run` on
 Linux) to verify routing, native cookies, profile isolation, and reopening.
 
 Host applications can call `RemoveProfile(dataPath)` after destroying all WebViews
