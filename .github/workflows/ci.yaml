@@ -53,9 +53,11 @@ jobs:
           go-version: ${{ matrix.go }}
       - name: Build examples
         run: >
-          go build ./examples/basic ./examples/bind
+          go build -ldflags=-w ./examples/basic ./examples/bind
       - name: Run tests
-        run: go test
+        # Old Go linkers cannot merge DWARF emitted by current Apple linkers.
+        # Keep their compile/runtime checks, without unused debug information.
+        run: go test -ldflags=-w
       - name: Run native WebView integration tests
         if: matrix.native && runner.os == 'Linux'
         run: xvfb-run -a go test -tags webview_integration -v -count=1 -timeout 180s .
