@@ -120,14 +120,26 @@ func checkProfileLifecycle() error {
 					w.Terminate()
 					return
 				}
-				w.Dispatch(func() {
-					cookies, err := w.GetCookies("http://profile-test.invalid/")
-					if err == nil && len(cookies) == 0 {
-						err = fmt.Errorf("native cookie store is empty")
+				// JavaScript cookie writes reach the native cookie manager
+				// asynchronously, particularly with WebKitGTK network processes.
+				var cookieErr error
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					checked := make(chan error, 1)
+					w.Dispatch(func() {
+						cookies, err := w.GetCookies("http://profile-test.invalid/")
+						if err == nil && len(cookies) == 0 {
+							err = fmt.Errorf("profile %s native cookie store is empty", tc.profile)
+						}
+						checked <- err
+					})
+					cookieErr = <-checked
+					if cookieErr == nil || time.Now().After(deadline) {
+						break
 					}
-					done <- err
-					w.Terminate()
-				})
+					time.Sleep(20 * time.Millisecond)
+				}
+				w.Dispatch(func() { done <- cookieErr; w.Terminate() })
 			case <-time.After(20 * time.Second):
 				done <- fmt.Errorf("profile navigation timeout")
 				w.Terminate()
