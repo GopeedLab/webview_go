@@ -422,6 +422,7 @@ WEBVIEW_API const webview_version_info_t *webview_version(void);
 #include <functional>
 #include <future>
 #include <map>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -3112,6 +3113,35 @@ public:
 };
 
 class win32_edge_engine : public engine_base {
+  static std::mutex &browser_mutex() { static std::mutex value; return value; }
+  static std::map<UINT32, unsigned> &browser_views() {
+    static std::map<UINT32, unsigned> value; return value;
+  }
+  HANDLE release_browser() {
+    if (!m_browser_pid) return nullptr;
+    std::lock_guard<std::mutex> lock(browser_mutex());
+    auto it = browser_views().find(m_browser_pid);
+    if (it == browser_views().end() || --it->second != 0) return nullptr;
+    browser_views().erase(it);
+    return OpenProcess(SYNCHRONIZE, FALSE, m_browser_pid);
+  }
+  void wait_for_browser(HANDLE process) {
+    if (!process) return;
+    const auto deadline = GetTickCount64() + 10000;
+    while (WaitForSingleObject(process, 0) == WAIT_TIMEOUT && GetTickCount64() < deadline) {
+      {
+        std::lock_guard<std::mutex> lock(browser_mutex());
+        // Another live page may have joined the same process during closure.
+        if (browser_views().count(m_browser_pid)) break;
+      }
+      MsgWaitForMultipleObjects(1, &process, FALSE, 20, QS_ALLINPUT);
+      MSG msg;
+      while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        if (msg.message != WM_QUIT) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+      }
+    }
+    CloseHandle(process);
+  }
 public:
   win32_edge_engine(bool debug, void *window, const webview_options_t *options = nullptr) : m_owns_window{!window}, m_options{options} {
     if (!is_webview2_available()) {
@@ -3327,6 +3357,7 @@ public:
   }
 
   virtual ~win32_edge_engine() {
+    auto browser = release_browser();
     // Close explicitly before releasing COM references so WebView2 can finish
     // the controller lifecycle while its owning apartment is still alive.
     if (m_controller) {
@@ -3344,6 +3375,9 @@ public:
       m_controller->Release();
       m_controller = nullptr;
     }
+    // Keep the owning apartment and message pump alive until the last browser
+    // finishes shutdown. Immediate recreation can otherwise race cookie flush.
+    wait_for_browser(browser);
     // Replace wndproc to avoid callbacks and other bad things during
     // destruction.
     auto wndproc = reinterpret_cast<LONG_PTR>(
@@ -3534,6 +3568,10 @@ private:
     if (!m_controller || !m_webview) {
       return false;
     }
+    if (SUCCEEDED(m_webview->get_BrowserProcessId(&m_browser_pid)) && m_browser_pid) {
+      std::lock_guard<std::mutex> lock(browser_mutex());
+      ++browser_views()[m_browser_pid];
+    }
     ICoreWebView2Settings *settings = nullptr;
     auto res = m_webview->get_Settings(&settings);
     if (res != S_OK) {
@@ -3650,6 +3688,7 @@ private:
   DWORD m_main_thread = GetCurrentThreadId();
   ICoreWebView2 *m_webview = nullptr;
   ICoreWebView2Controller *m_controller = nullptr;
+  UINT32 m_browser_pid = 0;
   webview2_com_handler *m_com_handler = nullptr;
   mswebview2::loader m_webview2_loader;
   int m_dpi{};
