@@ -425,6 +425,7 @@ WEBVIEW_API const webview_version_info_t *webview_version(void);
 #include <functional>
 #include <future>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -986,9 +987,13 @@ public:
   }
 
   void resolve(const std::string &seq, int status, const std::string &result) {
+    // Binding responses can remain queued after the owning window closes.
+    // The UI thread must not dereference this after teardown starts.
+    std::weak_ptr<int> lifetime = m_resolve_lifetime;
     // NOLINTNEXTLINE(modernize-avoid-bind): Lambda with move requires C++14
     dispatch(std::bind(
-        [seq, status, this](std::string escaped_result) {
+        [seq, status, this, lifetime](std::string escaped_result) {
+          if (lifetime.expired()) return;
           std::string js;
           js += "(function(){var seq = \"";
           js += seq;
@@ -1047,6 +1052,8 @@ if (status === 0) {\
   void eval(const std::string &js) { eval_impl(js); }
 
 protected:
+  void cancel_pending_resolves() { m_resolve_lifetime.reset(); }
+
   virtual void navigate_impl(const std::string &url) = 0;
   virtual void *window_impl() = 0;
   virtual void *widget_impl() = 0;
@@ -1076,6 +1083,7 @@ protected:
   virtual void on_window_created() { inc_window_count(); }
 
   virtual void on_window_destroyed(bool skip_termination = false) {
+    cancel_pending_resolves();
     if (!skip_termination) notify_event("closed");
     if (dec_window_count() <= 0) {
       if (!skip_termination) {
@@ -1100,6 +1108,7 @@ private:
     return 0;
   }
 
+  std::shared_ptr<int> m_resolve_lifetime = std::make_shared<int>(0);
   std::map<std::string, binding_ctx_t> bindings;
 };
 
@@ -1400,6 +1409,7 @@ public:
   gtk_webkit_engine &operator=(gtk_webkit_engine &&) = delete;
 
   virtual ~gtk_webkit_engine() {
+    cancel_pending_resolves();
     disconnect_webview_callbacks();
     if (m_webview) {
       gtk_widget_destroy(GTK_WIDGET(m_webview));
@@ -1712,6 +1722,7 @@ public:
   cocoa_wkwebview_engine &operator=(cocoa_wkwebview_engine &&) = delete;
 
   virtual ~cocoa_wkwebview_engine() {
+    cancel_pending_resolves();
     objc::autoreleasepool arp;
     if (m_window) {
       if (m_webview) {
@@ -3458,6 +3469,7 @@ public:
   }
 
   virtual ~win32_edge_engine() {
+    cancel_pending_resolves();
     auto browser = release_browser();
     // Close explicitly before releasing COM references so WebView2 can finish
     // the controller lifecycle while its owning apartment is still alive.

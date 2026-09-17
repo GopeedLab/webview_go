@@ -49,6 +49,11 @@ jobs:
         # Old Go linkers cannot merge DWARF emitted by current Apple linkers.
         # Keep their compile/runtime checks, without unused debug information.
         run: go test -ldflags=-w
+      - name: Check queued binding response lifetime with AddressSanitizer
+        if: matrix.native && runner.os == 'Linux'
+        run: |
+          g++ -std=c++11 -g -fsanitize=address tests/engine_lifetime.cc $(pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.1) -ldl -o /tmp/webview-engine-lifetime
+          /tmp/webview-engine-lifetime
       - name: Run native WebView integration tests
         if: matrix.native && runner.os == 'Linux'
         run: xvfb-run -a go test -tags webview_integration -v -count=1 -timeout 180s .
