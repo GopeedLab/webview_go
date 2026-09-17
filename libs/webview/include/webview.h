@@ -1313,7 +1313,10 @@ public:
       g_signal_connect(G_OBJECT(m_window), "destroy",
                        G_CALLBACK(+[](GtkWidget *, gpointer arg) {
                          auto *w = static_cast<gtk_webkit_engine *>(arg);
-                         // Widget destroyed along with window.
+                         // WebKit may retain the widget/content manager after
+                         // GTK destroys the window. Detach callbacks while the
+                         // engine and widget are both still valid.
+                         w->disconnect_webview_callbacks();
                          w->m_webview = nullptr;
                          w->m_window = nullptr;
                          w->on_window_destroyed();
@@ -1397,6 +1400,7 @@ public:
   gtk_webkit_engine &operator=(gtk_webkit_engine &&) = delete;
 
   virtual ~gtk_webkit_engine() {
+    disconnect_webview_callbacks();
     if (m_webview) {
       gtk_widget_destroy(GTK_WIDGET(m_webview));
       m_webview = nullptr;
@@ -1496,6 +1500,13 @@ public:
   }
 
 private:
+  void disconnect_webview_callbacks() {
+    if (!m_webview) return;
+    g_signal_handlers_disconnect_by_data(m_webview, this);
+    auto *manager = webkit_web_view_get_user_content_manager(WEBKIT_WEB_VIEW(m_webview));
+    g_signal_handlers_disconnect_by_data(manager, this);
+  }
+
   static char *get_string_from_js_result(WebKitJavascriptResult *r) {
     char *s;
 #if (WEBKIT_MAJOR_VERSION == 2 && WEBKIT_MINOR_VERSION >= 22) ||               \
