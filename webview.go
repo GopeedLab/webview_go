@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/cgo"
 	"strings"
 	"sync"
 	"time"
@@ -165,16 +166,15 @@ type WebView interface {
 
 type webview struct {
 	w           C.webview_t
-	eventHandle uintptr
+	eventHandle cgo.Handle
 	headlessWnd unsafe.Pointer
 }
 
 var (
-	m             sync.Mutex
-	index         uintptr
-	dispatch      = map[uintptr]func(){}
-	bindings      = map[uintptr]func(id, req string) (interface{}, error){}
-	eventHandlers = map[uintptr]func(Event){}
+	m        sync.Mutex
+	index    uintptr
+	dispatch = map[uintptr]func(){}
+	bindings = map[uintptr]func(id, req string) (interface{}, error){}
 )
 
 func boolToInt(b bool) C.int {
@@ -267,8 +267,12 @@ func NewWithOptions(opts Options) (WebView, error) {
 }
 
 func (w *webview) Destroy() {
-	w.SetEventHandler(nil)
+	C.webview_set_event_handler(w.w, nil, nil)
 	C.webview_destroy(w.w)
+	if w.eventHandle != 0 {
+		w.eventHandle.Delete()
+		w.eventHandle = 0
+	}
 	if w.headlessWnd != nil {
 		C.CgoWebViewDestroyHiddenWindow(w.headlessWnd)
 		w.headlessWnd = nil
@@ -490,26 +494,18 @@ type Event struct{ Name, URL, Message string }
 
 func (w *webview) SetEventHandler(handler func(Event)) {
 	C.webview_set_event_handler(w.w, nil, nil)
-	// Match Dispatch/Bind's integer registry to retain Go 1.13 compatibility.
-	// Native code retains only the integer, never a Go pointer.
-	m.Lock()
-	delete(eventHandlers, w.eventHandle)
-	w.eventHandle = 0
-	if handler != nil {
-		index++
-		w.eventHandle = index
-		eventHandlers[index] = handler
+	if w.eventHandle != 0 {
+		w.eventHandle.Delete()
+		w.eventHandle = 0
 	}
-	m.Unlock()
-	C.CgoWebViewSetEventHandler(w.w, C.uintptr_t(w.eventHandle))
+	if handler != nil {
+		w.eventHandle = cgo.NewHandle(handler)
+		C.CgoWebViewSetEventHandler(w.w, C.uintptr_t(w.eventHandle))
+	}
 }
 
 //export _webviewEventGoCallback
 func _webviewEventGoCallback(name, url, message *C.char, handle C.uintptr_t) {
-	m.Lock()
-	fn := eventHandlers[uintptr(handle)]
-	m.Unlock()
-	if fn != nil {
-		fn(Event{Name: C.GoString(name), URL: C.GoString(url), Message: C.GoString(message)})
-	}
+	fn := cgo.Handle(handle).Value().(func(Event))
+	fn(Event{Name: C.GoString(name), URL: C.GoString(url), Message: C.GoString(message)})
 }

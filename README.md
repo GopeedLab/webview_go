@@ -82,6 +82,8 @@ creation, profile removal belongs to the host lifecycle, not page JavaScript.
 
 ### Native lifecycle notifications
 
+Requires Go 1.17 or newer.
+
 `SetEventHandler(func(Event))` installs one UI-thread callback for native
 `load-error` and `closed` notifications. Load failures carry `URL` and `Message`
 and refer to the main navigation, excluding cancelled/superseded requests.
