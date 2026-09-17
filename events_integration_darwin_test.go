@@ -1,4 +1,5 @@
 //go:build webview_integration
+// +build webview_integration
 
 package webview
 
