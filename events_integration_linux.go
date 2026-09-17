@@ -13,7 +13,7 @@ typedef struct {
   GObject *manager;
 } event_test_objects;
 
-static event_test_objects event_test_retain_objects(void *engine) {
+static event_test_objects event_test_retain_objects(webview_t engine) {
   GObject *widget = G_OBJECT(webview_get_native_handle(engine, WEBVIEW_NATIVE_HANDLE_KIND_UI_WIDGET));
   GObject *manager = G_OBJECT(webkit_web_view_get_user_content_manager(WEBKIT_WEB_VIEW(widget)));
   event_test_objects objects = {engine, g_object_ref(widget), g_object_ref(manager)};
