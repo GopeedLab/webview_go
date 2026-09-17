@@ -211,6 +211,9 @@ extern void CgoWebViewConfigureDataStore(void *config, const webview_options_t *
  *
  * @param w The webview instance.
  */
+typedef void (*webview_event_fn)(const char *event, const char *url, const char *message, void *arg);
+WEBVIEW_API void webview_set_event_handler(webview_t w, webview_event_fn fn, void *arg);
+
 WEBVIEW_API void webview_destroy(webview_t w);
 
 /**
@@ -1017,6 +1020,13 @@ if (status === 0) {\
         result.empty() ? "undefined" : json_escape(result)));
   }
 
+  void set_event_handler(webview_event_fn fn, void *arg) { event_fn = fn; event_arg = arg; }
+  void notify_event(const std::string &event, const std::string &url = "", const std::string &message = "") {
+    if (event_fn) event_fn(event.c_str(), url.c_str(), message.c_str(), event_arg);
+  }
+  webview_event_fn event_fn = nullptr;
+  void *event_arg = nullptr;
+
   void *window() { return window_impl(); }
   void *widget() { return widget_impl(); }
   void *browser_controller() { return browser_controller_impl(); };
@@ -1066,6 +1076,7 @@ protected:
   virtual void on_window_created() { inc_window_count(); }
 
   virtual void on_window_destroyed(bool skip_termination = false) {
+    if (!skip_termination) notify_event("closed");
     if (dec_window_count() <= 0) {
       if (!skip_termination) {
         terminate();
@@ -1340,6 +1351,12 @@ public:
     } else {
       m_webview = webkit_web_view_new();
     }
+    g_signal_connect(m_webview, "load-failed", G_CALLBACK(+[](WebKitWebView *, WebKitLoadEvent, const gchar *uri, GError *error, gpointer arg) -> gboolean {
+      // A superseded navigation is not a failed page load.
+      if (!g_error_matches(error, WEBKIT_NETWORK_ERROR, WEBKIT_NETWORK_ERROR_CANCELLED))
+        static_cast<gtk_webkit_engine *>(arg)->notify_event("load-error", uri ? uri : "", error->message);
+      return FALSE;
+    }), this);
     WebKitUserContentManager *manager =
         webkit_web_view_get_user_content_manager(WEBKIT_WEB_VIEW(m_webview));
     g_signal_connect(manager, "script-message-received::external",
@@ -1702,6 +1719,10 @@ public:
       }
       m_window = nullptr;
     }
+    if (m_navigation_delegate) {
+      objc::msg_send<void>(m_navigation_delegate, "release"_sel);
+      m_navigation_delegate = nullptr;
+    }
     if (m_window_delegate) {
       objc::msg_send<void>(m_window_delegate, "release"_sel);
       m_window_delegate = nullptr;
@@ -1863,6 +1884,29 @@ private:
     auto instance = objc::msg_send<id>((id)cls, "new"_sel);
     objc_setAssociatedObject(instance, "webview", (id)this,
                              OBJC_ASSOCIATION_ASSIGN);
+    return instance;
+  }
+  id create_navigation_delegate() {
+    constexpr auto name = "WebviewWKNavigationDelegate";
+    auto cls = objc_lookUpClass(name);
+    if (!cls) {
+      cls = objc_allocateClassPair((Class) "NSObject"_cls, name, 0);
+      class_addProtocol(cls, objc_getProtocol("WKNavigationDelegate"));
+      auto failed = (IMP)(+[](id self, SEL, id view, id, id error) {
+        if (objc::msg_send<long>(error, "code"_sel) == -999) return;
+        auto info = objc::msg_send<id>(error, "userInfo"_sel);
+        auto url = objc::msg_send<id>(info, "objectForKey:"_sel, "NSErrorFailingURLStringKey"_str);
+        if (!url) url = objc::msg_send<id>(objc::msg_send<id>(view, "URL"_sel), "absoluteString"_sel);
+        auto raw = objc::msg_send<const char *>(url, "UTF8String"_sel);
+        auto message = objc::msg_send<const char *>(objc::msg_send<id>(error, "localizedDescription"_sel), "UTF8String"_sel);
+        get_associated_webview(self)->notify_event("load-error", raw ? raw : "", message ? message : "Navigation failed");
+      });
+      class_addMethod(cls, "webView:didFailProvisionalNavigation:withError:"_sel, failed, "v@:@@@");
+      class_addMethod(cls, "webView:didFailNavigation:withError:"_sel, failed, "v@:@@@");
+      objc_registerClassPair(cls);
+    }
+    auto instance = objc::msg_send<id>((id)cls, "new"_sel);
+    objc_setAssociatedObject(instance, "webview", (id)this, OBJC_ASSOCIATION_ASSIGN);
     return instance;
   }
   static id create_webkit_ui_delegate() {
@@ -2060,6 +2104,8 @@ private:
     objc::msg_send<void>(m_webview, "initWithFrame:configuration:"_sel,
                          CGRectMake(0, 0, 0, 0), config);
     objc::msg_send<void>(m_webview, "setUIDelegate:"_sel, ui_delegate);
+    m_navigation_delegate = create_navigation_delegate();
+    objc::msg_send<void>(m_webview, "setNavigationDelegate:"_sel, m_navigation_delegate);
 
     if (m_debug) {
       // Explicitly make WKWebView inspectable via Safari on OS versions that
@@ -2145,6 +2191,7 @@ private:
   id m_app_delegate{};
   id m_window_delegate{};
   id m_window{};
+  id m_navigation_delegate{};
   id m_webview{};
   id m_manager{};
   bool m_owns_window{};
@@ -2912,7 +2959,9 @@ class webview2_com_handler
     : public ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,
       public ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,
       public ICoreWebView2WebMessageReceivedEventHandler,
-      public ICoreWebView2PermissionRequestedEventHandler {
+      public ICoreWebView2PermissionRequestedEventHandler,
+      public ICoreWebView2NavigationCompletedEventHandler,
+      public ICoreWebView2NavigationStartingEventHandler {
   using webview2_com_handler_cb_t =
       std::function<void(ICoreWebView2Controller *, ICoreWebView2 *webview)>;
 
@@ -2920,6 +2969,8 @@ public:
   webview2_com_handler(HWND hwnd, msg_cb_t msgCb, webview2_com_handler_cb_t cb)
       : m_window(hwnd), m_msgCb(msgCb), m_cb(cb) {}
 
+  std::function<void(const std::string &, const std::string &)> navigation_failed;
+  std::map<UINT64, std::string> navigation_urls;
   virtual ~webview2_com_handler() = default;
   webview2_com_handler(const webview2_com_handler &other) = delete;
   webview2_com_handler &operator=(const webview2_com_handler &other) = delete;
@@ -2958,6 +3009,16 @@ public:
       return S_OK;
     }
 
+    static const IID navigation_starting_iid = {0x9adbe429, 0xf36d, 0x432b, {0x9d, 0xdc, 0xf8, 0x88, 0x1f, 0xbd, 0x76, 0xe3}};
+    if (IsEqualIID(riid, navigation_starting_iid)) {
+      *ppv = static_cast<ICoreWebView2NavigationStartingEventHandler *>(this);
+      AddRef(); return S_OK;
+    }
+    static const IID navigation_completed_iid = {0xd33a35bf, 0x1c49, 0x4f98, {0x93, 0xab, 0x00, 0x6e, 0x05, 0x33, 0xfe, 0x1c}};
+    if (IsEqualIID(riid, navigation_completed_iid)) {
+      *ppv = static_cast<ICoreWebView2NavigationCompletedEventHandler *>(this);
+      AddRef(); return S_OK;
+    }
     return E_NOINTERFACE;
   }
   HRESULT STDMETHODCALLTYPE Invoke(HRESULT res, ICoreWebView2Environment *env) {
@@ -2991,6 +3052,8 @@ public:
     controller->get_CoreWebView2(&webview);
     webview->add_WebMessageReceived(this, &token);
     webview->add_PermissionRequested(this, &token);
+    webview->add_NavigationCompleted(this, &token);
+    webview->add_NavigationStarting(this, &token);
 
     m_cb(controller, webview);
     return S_OK;
@@ -3012,6 +3075,33 @@ public:
     args->get_PermissionKind(&kind);
     if (kind == COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ) {
       args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+    }
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2 *, ICoreWebView2NavigationStartingEventArgs *args) {
+    UINT64 id = 0;
+    LPWSTR uri = nullptr;
+    args->get_NavigationId(&id);
+    args->get_Uri(&uri);
+    navigation_urls[id] = uri ? narrow_string(uri) : "";
+    CoTaskMemFree(uri);
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2 *, ICoreWebView2NavigationCompletedEventArgs *args) {
+    BOOL success = TRUE;
+    UINT64 id = 0;
+    args->get_IsSuccess(&success);
+    args->get_NavigationId(&id);
+    auto url = navigation_urls[id];
+    navigation_urls.erase(id);
+    if (!success && navigation_failed) {
+      COREWEBVIEW2_WEB_ERROR_STATUS status;
+      args->get_WebErrorStatus(&status);
+      if (status != COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED) {
+        navigation_failed(url, "WebView2 navigation error " + std::to_string(static_cast<int>(status)));
+      }
     }
     return S_OK;
   }
@@ -3539,6 +3629,9 @@ private:
           flag.clear();
         });
 
+    m_com_handler->navigation_failed = [this](const std::string &url, const std::string &message) {
+      notify_event("load-error", url, message);
+    };
     auto customPath = m_options && m_options->data_path ? widen_string(m_options->data_path) : std::wstring{};
     auto proxy = m_options && m_options->proxy_url ? widen_string(m_options->proxy_url) : std::wstring{};
     auto envOptions = new gopeed_environment_options(proxy.empty() ? L"" : L"--proxy-server=" + proxy + L" --proxy-bypass-list=<-loopback>");
@@ -3759,6 +3852,10 @@ WEBVIEW_API int webview_remove_profile(const char *data_path, const char *profil
 #else
   return 0;
 #endif
+}
+
+WEBVIEW_API void webview_set_event_handler(webview_t w, webview_event_fn fn, void *arg) {
+  static_cast<webview::webview *>(w)->set_event_handler(fn, arg);
 }
 
 WEBVIEW_API void webview_destroy(webview_t w) {

@@ -34,3 +34,11 @@ void CgoWebViewBind(webview_t w, const char *name, uintptr_t index) {
 void CgoWebViewUnbind(webview_t w, const char *name) {
     webview_unbind(w, name);
 }
+
+void _webviewEventGoCallback(char *, char *, char *, uintptr_t);
+static void event_cb(const char *event, const char *url, const char *message, void *arg) {
+    _webviewEventGoCallback((char *)event, (char *)url, (char *)message, (uintptr_t)arg);
+}
+void CgoWebViewSetEventHandler(webview_t w, uintptr_t handle) {
+    webview_set_event_handler(w, handle ? event_cb : NULL, (void *)handle);
+}

@@ -19,6 +19,7 @@ package webview
 #include <stdlib.h>
 #include <stdint.h>
 
+void CgoWebViewSetEventHandler(webview_t w, uintptr_t handle);
 void CgoWebViewDispatch(webview_t w, uintptr_t arg);
 void CgoWebViewBind(webview_t w, const char *name, uintptr_t index);
 void CgoWebViewUnbind(webview_t w, const char *name);
@@ -38,6 +39,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/cgo"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +74,9 @@ const (
 )
 
 type WebView interface {
+	// SetEventHandler receives native load-error and closed events on the UI thread.
+	// The handler must not block. Call on the UI thread before navigation.
+	SetEventHandler(handler func(Event))
 
 	// Run runs the main loop until it's terminated. After this function exits -
 	// you must destroy the webview.
@@ -161,6 +166,7 @@ type WebView interface {
 
 type webview struct {
 	w           C.webview_t
+	eventHandle cgo.Handle
 	headlessWnd unsafe.Pointer
 }
 
@@ -261,7 +267,12 @@ func NewWithOptions(opts Options) (WebView, error) {
 }
 
 func (w *webview) Destroy() {
+	C.webview_set_event_handler(w.w, nil, nil)
 	C.webview_destroy(w.w)
+	if w.eventHandle != 0 {
+		w.eventHandle.Delete()
+		w.eventHandle = 0
+	}
 	if w.headlessWnd != nil {
 		C.CgoWebViewDestroyHiddenWindow(w.headlessWnd)
 		w.headlessWnd = nil
@@ -476,4 +487,25 @@ func RemoveProfile(dataPath string) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// Event describes native main-frame failures and window closure.
+type Event struct{ Name, URL, Message string }
+
+func (w *webview) SetEventHandler(handler func(Event)) {
+	C.webview_set_event_handler(w.w, nil, nil)
+	if w.eventHandle != 0 {
+		w.eventHandle.Delete()
+		w.eventHandle = 0
+	}
+	if handler != nil {
+		w.eventHandle = cgo.NewHandle(handler)
+		C.CgoWebViewSetEventHandler(w.w, C.uintptr_t(w.eventHandle))
+	}
+}
+
+//export _webviewEventGoCallback
+func _webviewEventGoCallback(name, url, message *C.char, handle C.uintptr_t) {
+	fn := cgo.Handle(handle).Value().(func(Event))
+	fn(Event{Name: C.GoString(name), URL: C.GoString(url), Message: C.GoString(message)})
 }

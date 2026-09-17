@@ -79,3 +79,16 @@ Host applications can call `RemoveProfile(dataPath)` after destroying all WebVie
 using that profile. It removes the named WebKit store on macOS, releases and clears
 the GTK profile context, and deletes the Windows/Linux data directory. Like browser
 creation, profile removal belongs to the host lifecycle, not page JavaScript.
+
+### Native lifecycle notifications
+
+`SetEventHandler(func(Event))` installs one UI-thread callback for native
+`load-error` and `closed` notifications. Load failures carry `URL` and `Message`
+and refer to the main navigation, excluding cancelled/superseded requests.
+`closed` reports native window closure; programmatic `Destroy` removes the
+callback before destroying the view. Pass `nil` to unregister. The handler must
+not block; queue application work outside the native callback.
+
+Document `window.load` and same-document URL notifications can be implemented
+using a document-start `Init` script and `Bind`. Gate those scripts on
+`window === window.top` when only main-document events are wanted.
