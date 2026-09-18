@@ -1365,9 +1365,14 @@ public:
     }
     g_signal_connect(m_webview, "load-failed", G_CALLBACK(+[](WebKitWebView *, WebKitLoadEvent, const gchar *uri, GError *error, gpointer arg) -> gboolean {
       // A superseded navigation is not a failed page load.
-      if (!g_error_matches(error, WEBKIT_NETWORK_ERROR, WEBKIT_NETWORK_ERROR_CANCELLED))
-        static_cast<gtk_webkit_engine *>(arg)->notify_event("load-error", uri ? uri : "", error->message);
-      return FALSE;
+      if (g_error_matches(error, WEBKIT_NETWORK_ERROR, WEBKIT_NETWORK_ERROR_CANCELLED))
+        return FALSE;
+      auto *w = static_cast<gtk_webkit_engine *>(arg);
+      const bool handled = w->event_fn != nullptr;
+      w->notify_event("load-error", uri ? uri : "", error->message);
+      // When the host handles failures, do not load WebKit's fallback
+      // about:blank document and expose its URL/load as page events.
+      return handled ? TRUE : FALSE;
     }), this);
     WebKitUserContentManager *manager =
         webkit_web_view_get_user_content_manager(WEBKIT_WEB_VIEW(m_webview));
